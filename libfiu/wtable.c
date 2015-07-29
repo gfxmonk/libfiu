@@ -38,7 +38,7 @@ struct wentry {
 
 struct wtable {
 	/* Final (non-wildcard) entries are kept in this hash. */
-	hash_t *finals;
+	fiu_hash_t *finals;
 
 	/* Wildcarded entries are kept in this dynamic array. */
 	struct wentry *wildcards;
@@ -46,7 +46,7 @@ struct wtable {
 	size_t ws_used_count;
 
 	/* And we keep a cache of lookups into the wildcards array. */
-	cache_t *wcache;
+	fiu_cache_t *wcache;
 
 	void (*destructor)(void *);
 };
@@ -65,7 +65,7 @@ struct wtable *wtable_create(void (*destructor)(void *))
 	t->wildcards = NULL;
 	t->wcache = NULL;
 
-	t->finals = hash_create(destructor);
+	t->finals = fiu_hash_create(destructor);
 	if (t->finals == NULL)
 		goto error;
 
@@ -75,7 +75,7 @@ struct wtable *wtable_create(void (*destructor)(void *))
 
 	memset(t->wildcards, 0, sizeof(struct wentry) * MIN_SIZE);
 
-	t->wcache = cache_create();
+	t->wcache = fiu_cache_create();
 	if (t->wcache == NULL)
 		goto error;
 
@@ -87,9 +87,9 @@ struct wtable *wtable_create(void (*destructor)(void *))
 
 error:
 	if (t->finals)
-		hash_free(t->finals);
+		fiu_hash_free(t->finals);
 	if (t->wcache)
-		cache_free(t->wcache);
+		fiu_cache_free(t->wcache);
 	free(t->wildcards);
 	free(t);
 	return NULL;
@@ -100,8 +100,8 @@ void wtable_free(struct wtable *t)
 	int i;
 	struct wentry *entry;
 
-	hash_free(t->finals);
-	cache_free(t->wcache);
+	fiu_hash_free(t->finals);
+	fiu_cache_free(t->wcache);
 
 	for (i = 0; i < t->ws_size; i++) {
 		entry = t->wildcards + i;
@@ -205,23 +205,23 @@ void *wtable_get(struct wtable *t, const char *key)
 	struct wentry *entry;
 
 	/* Do an exact lookup first. */
-	value = hash_get(t->finals, key);
+	value = fiu_hash_get(t->finals, key);
 	if (value)
 		return value;
 
 	/* Then see if we can find it in the wcache */
-	if (cache_get(t->wcache, key, &value))
+	if (fiu_cache_get(t->wcache, key, &value))
 		return value;
 
 	/* And then walk the wildcards array. */
 	entry = wildcards_find_entry(t, key, false, NULL);
 	if (entry) {
-		cache_set(t->wcache, key, entry->value);
+		fiu_cache_set(t->wcache, key, entry->value);
 		return entry->value;
 	}
 
 	/* Cache the negative result as well. */
-	cache_set(t->wcache, key, NULL);
+	fiu_cache_set(t->wcache, key, NULL);
 
 	return NULL;
 }
@@ -293,7 +293,7 @@ static bool resize_table(struct wtable *t, size_t new_size)
 
 	/* Keep the cache the same size as our table, which works reasonably
 	 * well in practise */
-	cache_resize(t->wcache, new_size);
+	fiu_cache_resize(t->wcache, new_size);
 
 	return true;
 }
@@ -311,7 +311,7 @@ bool wtable_set(struct wtable *t, const char *key, void *value)
 
 		return wildcards_set(t, strdup(key), value);
 	} else {
-		return hash_set(t->finals, key, value);
+		return fiu_hash_set(t->finals, key, value);
 	}
 }
 
@@ -348,11 +348,11 @@ bool wtable_del(struct wtable *t, const char *key)
 		/* Invalidate the cache. We could be smart and walk it,
 		 * removing only the positive hits, but it's also more
 		 * expensive */
-		cache_invalidate(t->wcache);
+		fiu_cache_invalidate(t->wcache);
 
 		return true;
 	} else {
-		return hash_del(t->finals, key);
+		return fiu_hash_del(t->finals, key);
 	}
 }
 

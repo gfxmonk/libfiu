@@ -76,7 +76,7 @@ struct entry {
 	enum used_as in_use;
 };
 
-struct hash {
+struct fiu_hash {
 	struct entry *entries;
 	size_t table_size;
 	size_t nentries;
@@ -93,9 +93,9 @@ static void dumb_destructor(void *value)
 	return;
 }
 
-struct hash *hash_create(void (*destructor)(void *))
+struct fiu_hash *fiu_hash_create(void (*destructor)(void *))
 {
-	struct hash *h = malloc(sizeof(struct hash));
+	struct fiu_hash *h = malloc(sizeof(struct fiu_hash));
 	if (h == NULL)
 		return NULL;
 
@@ -118,7 +118,7 @@ struct hash *hash_create(void (*destructor)(void *))
 	return h;
 }
 
-void hash_free(struct hash *h)
+void fiu_hash_free(struct fiu_hash *h)
 {
 	size_t i;
 	struct entry *entry;
@@ -135,7 +135,7 @@ void hash_free(struct hash *h)
 	free(h);
 }
 
-void *hash_get(struct hash *h, const char *key)
+void *fiu_hash_get(struct fiu_hash *h, const char *key)
 {
 	size_t pos;
 	struct entry *entry;
@@ -163,7 +163,7 @@ void *hash_get(struct hash *h, const char *key)
 /* Internal version of hash_set.
  * It uses the key as-is (it won't copy it), and it won't resize the array
  * either. */
-static bool _hash_set(struct hash *h, char *key, void *value)
+static bool _fiu_hash_set(struct fiu_hash *h, char *key, void *value)
 {
 	size_t pos;
 	struct entry *entry;
@@ -192,7 +192,7 @@ static bool _hash_set(struct hash *h, char *key, void *value)
 	return false;
 }
 
-static bool resize_table(struct hash *h, size_t new_size)
+static bool resize_table(struct fiu_hash *h, size_t new_size)
 {
 	size_t i;
 	struct entry *old_entries, *e;
@@ -215,11 +215,11 @@ static bool resize_table(struct hash *h, size_t new_size)
 	h->nentries = 0;
 
 	/* Insert the old entries into the new table. We use the internal
-	 * version _hash_set() to avoid copying the keys again. */
+	 * version _fiu_hash_set() to avoid copying the keys again. */
 	for (i = 0; i < old_size; i++) {
 		e = old_entries + i;
 		if (e->in_use == IN_USE)
-			_hash_set(h, e->key, e->value);
+			_fiu_hash_set(h, e->key, e->value);
 	}
 
 	free(old_entries);
@@ -227,7 +227,7 @@ static bool resize_table(struct hash *h, size_t new_size)
 	return true;
 }
 
-bool hash_set(struct hash *h, const char *key, void *value)
+bool fiu_hash_set(struct fiu_hash *h, const char *key, void *value)
 {
 	if ((float) h->nentries / h->table_size > 0.7) {
 		/* If we're over 70% full, grow the table by 30% */
@@ -235,11 +235,11 @@ bool hash_set(struct hash *h, const char *key, void *value)
 			return false;
 	}
 
-	return _hash_set(h, strdup(key), value);
+	return _fiu_hash_set(h, strdup(key), value);
 }
 
 
-bool hash_del(struct hash *h, const char *key)
+bool fiu_hash_del(struct fiu_hash *h, const char *key)
 {
 	size_t pos;
 	struct entry *entry;
@@ -286,21 +286,21 @@ bool hash_del(struct hash *h, const char *key)
  * It IS thread-safe.
  */
 
-struct cache {
-	struct hash *hash;
+struct fiu_cache {
+	struct fiu_hash *hash;
 	size_t size;
 	pthread_rwlock_t lock;
 };
 
-struct cache *cache_create()
+struct fiu_cache *fiu_cache_create()
 {
-	struct cache *c;
+	struct fiu_cache *c;
 
-	c = malloc(sizeof(struct cache));
+	c = malloc(sizeof(struct fiu_cache));
 	if (c == NULL)
 		return NULL;
 
-	c->hash = hash_create(NULL);
+	c->hash = fiu_hash_create(NULL);
 	if (c->hash == NULL) {
 		free(c);
 		return NULL;
@@ -311,15 +311,15 @@ struct cache *cache_create()
 	return c;
 }
 
-void cache_free(struct cache *c)
+void fiu_cache_free(struct fiu_cache *c)
 {
-	hash_free(c->hash);
+	fiu_hash_free(c->hash);
 	pthread_rwlock_destroy(&c->lock);
 	free(c);
 }
 
 /* Internal non-locking version of cache_invalidate(). */
-static void _cache_invalidate(struct cache *c)
+static void _fiu_cache_invalidate(struct fiu_cache *c)
 {
 	size_t i;
 	struct entry *entry;
@@ -335,16 +335,16 @@ static void _cache_invalidate(struct cache *c)
 	}
 }
 
-bool cache_invalidate(struct cache *c)
+bool fiu_cache_invalidate(struct fiu_cache *c)
 {
 	pthread_rwlock_wrlock(&c->lock);
-	_cache_invalidate(c);
+	_fiu_cache_invalidate(c);
 	pthread_rwlock_unlock(&c->lock);
 
 	return true;
 }
 
-bool cache_resize(struct cache *c, size_t new_size)
+bool fiu_cache_resize(struct fiu_cache *c, size_t new_size)
 {
 	pthread_rwlock_wrlock(&c->lock);
 	if (new_size > c->size) {
@@ -355,7 +355,7 @@ bool cache_resize(struct cache *c, size_t new_size)
 	} else {
 		/* TODO: Implement shrinking. We just invalidate everything
 		 * for now, and then resize. */
-		_cache_invalidate(c);
+		_fiu_cache_invalidate(c);
 
 		if (resize_table(c->hash, new_size)) {
 			c->size = new_size;
@@ -371,7 +371,7 @@ success:
 	return true;
 }
 
-struct entry *entry_for_key(struct cache *c, const char *key)
+struct entry *entry_for_key(struct fiu_cache *c, const char *key)
 {
 	size_t pos;
 	struct entry *entry;
@@ -383,7 +383,7 @@ struct entry *entry_for_key(struct cache *c, const char *key)
 	return entry;
 }
 
-bool cache_get(struct cache *c, const char *key, void **value)
+bool fiu_cache_get(struct fiu_cache *c, const char *key, void **value)
 {
 	pthread_rwlock_rdlock(&c->lock);
 	struct entry *e = entry_for_key(c, key);
@@ -410,7 +410,7 @@ miss:
 }
 
 
-bool cache_set(struct cache *c, const char *key, void *value)
+bool fiu_cache_set(struct fiu_cache *c, const char *key, void *value)
 {
 	pthread_rwlock_wrlock(&c->lock);
 	struct entry *e = entry_for_key(c, key);
@@ -427,7 +427,7 @@ bool cache_set(struct cache *c, const char *key, void *value)
 	return true;
 }
 
-bool cache_del(struct cache *c, const char *key)
+bool fiu_cache_del(struct fiu_cache *c, const char *key)
 {
 	pthread_rwlock_wrlock(&c->lock);
 	struct entry *e = entry_for_key(c, key);
